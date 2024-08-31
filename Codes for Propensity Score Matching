@@ -1,0 +1,143 @@
+library(DataExplorer)
+library(skimr)
+library(openxlsx)
+library(readxl)
+library(writexl)
+library(tidyverse)
+setwd("C:\\Users\\74736\\Desktop\\倾向性评分匹配-2024.5.11")
+data<- read_excel("patient_survive_days.xlsx")
+View(data)
+skim(data)
+str(data)
+plot_missing(data)
+data <- subset(data, select = -dod)
+data <- subset(data, select = -admittime)
+data <- subset(data, select = -dischtime)
+data <- subset(data, select = -los_hospital)
+data <- subset(data, select = -first_hosp_stay)
+data <- subset(data, select = -icu_intime)
+data <- subset(data, select = -icu_outtime)
+data <- subset(data, select = -los_icu)
+data <- subset(data, select = -icustay_seq)
+data <- subset(data, select = -first_icu_stay)
+data <- subset(data, select = -survive_days_未死亡为空_from_admittime)
+data <- data[data$aki_stage_final != 0, ]
+data$group <- ifelse(data$aki_stage_final %in% c(1, 2), "前期组", "后期组")
+View(data)
+nrow(data)
+#[1] 11922
+variables_to_factorize <- c("group","gender","diabetes", "copd", "cad", "ckd", "shock", "hypertension", "congestive_heart_failure")
+data[variables_to_factorize] <- lapply(data[variables_to_factorize], factor)
+str(data)
+write.xlsx(data, file = "分析数据.xlsx")
+#PS-Matching要求
+#group
+#"admission_age","gender","sofa"
+#"admission_age","gender"
+#"wbc","spo2","sodium","rbc","pt","potassium","platelet","mcv"","mchc","ld_ldh","inr","hemoglobin","hematocrit","heart_rate","gcs","chloride","calcium","bun","bicarbonate","aptt","apsiii","aniongap","acag
+#diabetes","copd","cad","ckd，shock","hypertension","congestive_heart_failure"
+#"dod_30_from_admittime","dod_90_from_admittime"
+
+
+#基线资料组间对比
+#批量正态性检验
+multi_ks <- function(cols, group, data) {
+  result <- data.frame('Characteristics'='', 'P1'=0, 'P2'=0, 'NormalDistribution' = '', stringsAsFactors = FALSE) # Add stringsAsFactors = FALSE
+  for (col in cols) {
+    ks <- tapply(data[[col]], data[[group]], function(x) {
+      ks.test(x, "pnorm") # 使用 Kolmogorov–Smirnov 检验，假设检验的是标准正态分*
+    })
+    isNormal <- ifelse(sapply(ks, function(x) x$p.value > 0.05), 'true', 'false')
+    p_values <- sapply(ks, function(x) format(x$p.value, scientific = TRUE, digits = 3)) # Formatting p-values with scientific notation
+    row <- c(col, p_values, isNormal)
+    result <- rbind(result, row)
+  }
+  result <- result[-1,]
+  return(result)
+}
+# 选择连续变量所在列
+names(data)
+cols <- colnames(data[,c(5,18,24,25,26,29,30,31,32,34,35,36,37,39,40,41,42,43,44,45,46,47,48,49,61)])
+# 正态性检验
+# cols: 需要进行检验的变量名称
+# data: 待分析数据
+res <- multi_ks(cols, 'group', data)
+View(res)
+
+
+#批量进行组间比较
+library(tableone)
+#所有需要分析的基线资料数据
+vars <-c("admission_age","gender","sofa","wbc","spo2","sodium","rbc","pt","potassium","platelet","mcv","mchc","ld_ldh","inr","hemoglobin","hematocrit","heart_rate","gcs","chloride","calcium","bun","bicarbonate","aptt","apsiii","aniongap","acag","diabetes","copd","cad","ckd","shock","hypertension","congestive_heart_failure","dod_30_from_admittime","dod_90_from_admittime")
+#指定非正态分布连续变量
+nonvar<- c("admission_age","sofa","wbc","spo2","sodium","rbc","pt","potassium","platelet","mcv","mchc","ld_ldh","inr","hemoglobin","hematocrit","heart_rate","gcs","chloride","calcium","bun","bicarbonate","aptt","apsiii","aniongap","acag") 
+#指定分类变量
+catVars<- c("gender","diabetes","copd","cad","ckd","shock","hypertension","congestive_heart_failure","dod_30_from_admittime","dod_90_from_admittime")
+table2 <- CreateTableOne(vars=vars, factorVars=catVars, strata = "group", data =data)
+table2<- print(table2, #构建的table函数
+               nonnormal = nonvar,
+               catDigits = 2,contDigits = 2,pDigits = 3, #附加条件
+               showAllLevels=TRUE, #显示所有变量
+               quote =FALSE, # 不显示引号
+               noSpaces = TRUE, # #删除用于对齐的空格
+               printToggle = TRUE,
+               smd=TRUE) #展示输出结果*`
+write.csv(table2, file = "匹配前基线资料对比.csv")
+
+#PSM正式开始
+library(MatchIt)
+PSM=matchit(group~admission_age+gender+sofa,data = data,method = "nearest",ratio = 1,caliper=0.01)
+summary(PSM)
+#均衡性检验
+plot(PSM,type="hist", interactive=FALSE)
+dev.off()
+plot(PSM, type = 'jitter', interactive = FALSE)
+dev.off()
+dataPSM<-match.data(PSM)
+View(dataPSM)
+write.xlsx(dataPSM, file = "匹配后数据.xlsx")
+
+
+
+#批量进行组间比较
+#批量正态性检验
+multi_ks <- function(cols, group, dataPSM) {
+  result <- data.frame('Characteristics'='', 'P1'=0, 'P2'=0, 'NormalDistribution' = '', stringsAsFactors = FALSE) # Add stringsAsFactors = FALSE
+  for (col in cols) {
+    ks <- tapply(dataPSM[[col]], dataPSM[[group]], function(x) {
+      ks.test(x, "pnorm") # 使用 Kolmogorov–Smirnov 检验，假设检验的是标准正态分*
+    })
+    isNormal <- ifelse(sapply(ks, function(x) x$p.value > 0.05), 'true', 'false')
+    p_values <- sapply(ks, function(x) format(x$p.value, scientific = TRUE, digits = 3)) # Formatting p-values with scientific notation
+    row <- c(col, p_values, isNormal)
+    result <- rbind(result, row)
+  }
+  result <- result[-1,]
+  return(result)
+}
+# 选择连续变量所在列
+names(data)
+cols <- colnames(data[,c(5,18,24,25,26,29,30,31,32,34,35,36,37,39,40,41,42,43,44,45,46,47,48,49,61)])
+# 正态性检验
+# cols: 需要进行检验的变量名称
+# data: 待分析数据
+res <- multi_ks(cols, 'group', dataPSM)
+View(res)
+
+library(tableone)
+#所有需要分析的基线资料数据
+vars <-c("admission_age","gender","sofa","wbc","spo2","sodium","rbc","pt","potassium","platelet","mcv","mchc","ld_ldh","inr","hemoglobin","hematocrit","heart_rate","gcs","chloride","calcium","bun","bicarbonate","aptt","apsiii","aniongap","acag","diabetes","copd","cad","ckd","shock","hypertension","congestive_heart_failure","dod_30_from_admittime","dod_90_from_admittime")
+#指定非正态分布连续变量
+nonvar<- c("admission_age","sofa","wbc","spo2","sodium","rbc","pt","potassium","platelet","mcv","mchc","ld_ldh","inr","hemoglobin","hematocrit","heart_rate","gcs","chloride","calcium","bun","bicarbonate","aptt","apsiii","aniongap","acag") 
+#指定分类变量
+catVars<- c("gender","diabetes","copd","cad","ckd","shock","hypertension","congestive_heart_failure","dod_30_from_admittime","dod_90_from_admittime")
+table2 <- CreateTableOne(vars=vars, factorVars=catVars, strata = "group", data =dataPSM)
+table2<- print(table2, #构建的table函数
+               nonnormal = nonvar,
+               catDigits = 2,contDigits = 2,pDigits = 3, #附加条件
+               showAllLevels=TRUE, #显示所有变量
+               quote =FALSE, # 不显示引号
+               noSpaces = TRUE, # #删除用于对齐的空格
+               printToggle = TRUE,
+               smd=TRUE) #展示输出结果*`
+write.csv(table2, file = "匹配后基线资料对比.csv")
